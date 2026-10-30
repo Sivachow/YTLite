@@ -1,29 +1,74 @@
 #import <UIKit/UIKit.h>
 #import <AVFoundation/AVFoundation.h>
+#import <dlfcn.h>
 
 static NSMutableArray<NSString *> *entries;
 static NSObject *logLock;
 static NSDate *started;
+static NSMutableDictionary<NSString *, NSNumber *> *lastTrace;
+static __thread BOOL recordingError;
 
 static void Record(NSString *message) {
     if (!logLock || !message) return;
     @synchronized (logLock) {
         NSString *line = [NSString stringWithFormat:@"%7.1fs  %@", -[started timeIntervalSinceNow], message];
         [entries addObject:line];
-        if (entries.count > 200) [entries removeObjectAtIndex:0];
+        if (entries.count > 400) [entries removeObjectAtIndex:0];
     }
 }
 
+static void RecordAudio(void) {
+    AVAudioSession *session = AVAudioSession.sharedInstance;
+    NSMutableArray *ports = [NSMutableArray new];
+    for (AVAudioSessionPortDescription *port in session.currentRoute.outputs) [ports addObject:port.portType];
+    Record([NSString stringWithFormat:@"Audio category=%@ mode=%@ options=%lu sampleRate=%.0f outputTypes=%@ otherAudio=%d", session.category, session.mode, (unsigned long)session.categoryOptions, session.sampleRate, [ports componentsJoinedByString:@","], session.otherAudioPlaying]);
+}
+
+static BOOL SafeDomain(NSString *domain) {
+    NSCharacterSet *allowed = [NSCharacterSet characterSetWithCharactersInString:@"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-"];
+    return domain.length > 0 && domain.length <= 160 && [domain rangeOfCharacterFromSet:allowed.invertedSet].location == NSNotFound;
+}
+
 static void RecordError(NSError *error, NSString *origin) {
-    if (!error) return;
+    if (!error || recordingError) return;
     NSString *domain = error.domain;
     if ([domain rangeOfString:@"youtube" options:NSCaseInsensitiveSearch].location == NSNotFound &&
         [domain rangeOfString:@"media" options:NSCaseInsensitiveSearch].location == NSNotFound &&
         ![domain isEqualToString:NSURLErrorDomain] && ![domain isEqualToString:AVFoundationErrorDomain]) return;
-    // Deliberately omit userInfo, descriptions, URLs, account IDs and headers.
-    NSCharacterSet *allowed = [NSCharacterSet characterSetWithCharactersInString:@"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-"];
-    if (domain.length > 160 || [domain rangeOfCharacterFromSet:allowed.invertedSet].location != NSNotFound) return;
-    Record([NSString stringWithFormat:@"%@ domain=%@ code=%ld", origin, domain, (long)error.code]);
+    if (!SafeDomain(domain)) return;
+    recordingError = YES;
+    @try {
+        Record([NSString stringWithFormat:@"%@ domain=%@ code=%ld", origin, domain, (long)error.code]);
+        BOOL detailed = ([domain isEqualToString:AVFoundationErrorDomain] && error.code == -11847) ||
+            ([domain isEqualToString:@"YTMediaError"] && error.code == 119) ||
+            ([domain hasSuffix:@"ErrorDomain.playback"] && error.code == 14);
+        if (!detailed) return;
+        NSString *key = [NSString stringWithFormat:@"%@/%ld", domain, (long)error.code];
+        NSTimeInterval now = -[started timeIntervalSinceNow];
+        @synchronized (logLock) {
+            NSNumber *previous = lastTrace[key];
+            if (previous && now - previous.doubleValue < 5) return;
+            lastTrace[key] = @(now);
+        }
+        RecordAudio();
+        NSError *underlying = error;
+        for (NSUInteger depth = 0; depth < 3; depth++) {
+            id candidate = underlying.userInfo[NSUnderlyingErrorKey];
+            if (![candidate isKindOfClass:NSError.class] || candidate == underlying) break;
+            underlying = candidate;
+            if (SafeDomain(underlying.domain)) Record([NSString stringWithFormat:@"Underlying domain=%@ code=%ld", underlying.domain, (long)underlying.code]);
+        }
+        NSUInteger count = 0;
+        for (NSNumber *address in NSThread.callStackReturnAddresses) {
+            Dl_info info = {};
+            uintptr_t pc = address.unsignedLongLongValue;
+            if (!dladdr((const void *)pc, &info) || !info.dli_fname) continue;
+            NSString *name = [[NSString stringWithUTF8String:info.dli_fname] lastPathComponent];
+            if (![@[@"YouTube", @"YTLite.dylib", @"AVFoundation", @"AVFCore", @"CoreMedia", @"MediaToolbox", @"AudioToolbox"] containsObject:name]) continue;
+            Record([NSString stringWithFormat:@"Caller %@ +0x%llx", name, (unsigned long long)(pc - (uintptr_t)info.dli_fbase)]);
+            if (++count >= 10) break;
+        }
+    } @finally { recordingError = NO; }
 }
 
 @interface YTDLogController : UIViewController
@@ -32,7 +77,7 @@ static void RecordError(NSError *error, NSString *origin) {
 
 static NSString *Snapshot(void) {
     @synchronized (logLock) {
-        return [@"YouTube 21.43.5 / YTPlus 5.2b4 diagnostics\nNative share and segment-skip compatibility patches enabled.\nYTUHD playback workaround removed.\nOnly error domains/codes and app/playback state; no request/account data.\n\n" stringByAppendingString:[entries componentsJoinedByString:@"\n"]];
+        return [@"YouTube 21.43.5 / YTPlus 5.2b4 diagnostics v2\nNative share and segment-skip compatibility patches enabled.\nYTUHD playback workaround removed.\nError codes, audio-session state and image-relative callers; no request/account data.\n\n" stringByAppendingString:[entries componentsJoinedByString:@"\n"]];
     }
 }
 
@@ -123,17 +168,25 @@ static NSString *Snapshot(void) {
 
 %ctor {
     @autoreleasepool {
-        entries = [NSMutableArray new]; logLock = [NSObject new]; started = [NSDate date];
+        entries = [NSMutableArray new]; logLock = [NSObject new]; started = [NSDate date]; lastTrace = [NSMutableDictionary new];
         Record(@"Diagnostics loaded; background workaround OFF");
         %init;
         static YTDLogAccess *access = [YTDLogAccess new];
         NSNotificationCenter *center = NSNotificationCenter.defaultCenter;
         [center addObserverForName:UIApplicationDidBecomeActiveNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n) {
             Record(@"App active");
+            RecordAudio();
             [access attach];
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{ [access attach]; });
         }];
-        [center addObserverForName:UIApplicationDidEnterBackgroundNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n) { Record(@"App entered background"); }];
+        [center addObserverForName:UIApplicationDidEnterBackgroundNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n) { Record(@"App entered background"); RecordAudio(); }];
+        [center addObserverForName:AVAudioSessionInterruptionNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n) {
+            Record([NSString stringWithFormat:@"Audio interruption type=%@ options=%@", n.userInfo[AVAudioSessionInterruptionTypeKey], n.userInfo[AVAudioSessionInterruptionOptionKey]]);
+            RecordAudio();
+        }];
+        [center addObserverForName:AVAudioSessionRouteChangeNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n) {
+            Record([NSString stringWithFormat:@"Audio route change reason=%@", n.userInfo[AVAudioSessionRouteChangeReasonKey]]); RecordAudio();
+        }];
         [center addObserverForName:AVPlayerItemPlaybackStalledNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n) { Record(@"AVPlayer playback stalled"); }];
         [center addObserverForName:AVPlayerItemFailedToPlayToEndTimeNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n) {
             Record(@"AVPlayer failed to finish"); RecordError(n.userInfo[AVPlayerItemFailedToPlayToEndTimeErrorKey], @"AVPlayer failure");
