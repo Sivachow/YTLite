@@ -130,6 +130,9 @@ jobs:
           /usr/libexec/PlistBuddy -c "Delete :UIDesignRequiresCompatibility" "$plist" 2>/dev/null || true
           /usr/libexec/PlistBuddy -c "Delete :NSFaceIDUsageDescription" "$plist" 2>/dev/null || true
           /usr/libexec/PlistBuddy -c "Add :NSFaceIDUsageDescription string 'Face ID is required to authenticate.'" "$plist"
+          if ! /usr/libexec/PlistBuddy -c "Print :NSPhotoLibraryAddUsageDescription" "$plist" >/dev/null 2>&1; then
+            /usr/libexec/PlistBuddy -c "Add :NSPhotoLibraryAddUsageDescription string 'Save downloaded videos and images to your photo library.'" "$plist"
+          fi
           rm youtube.ipa
           (cd ipa_tmp && zip -qry ../youtube.ipa .)
           rm -rf ipa_tmp
