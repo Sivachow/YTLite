@@ -55,7 +55,7 @@ jobs:
 
     steps:
       - uses: actions/checkout@v6
-        if: ${{ inputs.enable_localization }}
+        if: ${{ inputs.enable_localization || inputs.enable_ytuhd }}
 
       - name: Install Dependencies
         run: brew install make ldid dpkg
@@ -138,7 +138,10 @@ jobs:
 
       - name: Clone YTUHD
         if: ${{ inputs.enable_ytuhd }}
-        run: git clone --quiet --depth=1 https://github.com/Tonwalter888/YTUHD.git
+        run: |
+          git clone --quiet https://github.com/Tonwalter888/YTUHD.git
+          git -C YTUHD checkout cf266c2a351eb4f97e6bb2fb129509c501bdf207
+          python3 scripts/enable-playback-default.py YTUHD/Settings.x
 
       - name: Clone Return-YouTube-Dislikes
         if: ${{ inputs.enable_ryd }}
