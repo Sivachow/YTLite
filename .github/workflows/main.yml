@@ -100,6 +100,11 @@ jobs:
       contents: write
 
     steps:
+      - name: Checkout compatibility fix
+        uses: actions/checkout@v6
+        with:
+          path: build-source
+
       - name: Download built debs
         uses: actions/download-artifact@v8
         with:
@@ -151,6 +156,12 @@ jobs:
             [ -f "$f" ] && tweaks+=("$f")
           done
           cyan -i youtube.ipa -o "YouTubePlus_${TWEAK_VERSION}.ipa" -uwef "${tweaks[@]}" -n "$DISPLAY_NAME" -b "$BUNDLE_ID"
+
+      - name: Disable obsolete native share on 5.2b4
+        if: inputs.tweak_version == '5.2b4'
+        env:
+          TWEAK_VERSION: ${{ inputs.tweak_version }}
+        run: python3 build-source/scripts/disable-obsolete-native-share.py "YouTubePlus_${TWEAK_VERSION}.ipa"
 
       - name: Upload to GitHub Releases
         uses: softprops/action-gh-release@v3
