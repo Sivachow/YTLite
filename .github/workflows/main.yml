@@ -157,7 +157,7 @@ jobs:
           done
           cyan -i youtube.ipa -o "YouTubePlus_${TWEAK_VERSION}.ipa" -uwef "${tweaks[@]}" -n "$DISPLAY_NAME" -b "$BUNDLE_ID"
 
-      - name: Disable obsolete native share on 5.2b4
+      - name: Disable crash-confirmed obsolete hooks on 5.2b4
         if: inputs.tweak_version == '5.2b4'
         env:
           TWEAK_VERSION: ${{ inputs.tweak_version }}
