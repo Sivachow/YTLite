@@ -1,0 +1,9 @@
+Package: com.sivachow.ytdiagnostics
+Name: YouTube Playback Diagnostics
+Version: 1.0.0
+Architecture: iphoneos-arm
+Description: Local, redacted playback diagnostics
+Maintainer: Siva
+Author: Siva
+Section: Tweaks
+Depends: mobilesubstrate
